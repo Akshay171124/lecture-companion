@@ -45,3 +45,22 @@ class ResourceOut(BaseModel):
 
     class Config:
         from_attributes = True
+
+class ChunkHitOut(BaseModel):
+    chunk_id: uuid.UUID
+    resource_id: uuid.UUID
+    filename: str
+    page_ref: str | None
+    text: str
+    rank: float
+
+class AnswerOut(BaseModel):
+    id: uuid.UUID
+    session_id: uuid.UUID
+    question_id: uuid.UUID
+    answer_md: str
+    sources_json: str
+    created_at: datetime
+
+    class Config:
+        from_attributes = True

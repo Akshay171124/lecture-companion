@@ -2,7 +2,32 @@
 
 import { useEffect, useRef, useState } from "react";
 import { api } from "../lib/api";
-import type { QuestionOut, ResourceOut } from "../lib/types";
+import type { QuestionOut, ResourceOut, ChunkHitOut, AnswerOut } from "../lib/types";
+
+function toSearchQuery(s: string) {
+  const stop = new Set([
+    "the","a","an","and","or","but","so","to","of","in","on","for","with","as","at","by",
+    "is","are","was","were","be","been","being","do","does","did",
+    "why","what","how","when","where","which","who",
+    "this","that","these","those","it","we","you","i","they",
+    "can","could","should","would","may","might"
+  ]);
+
+  const tokens = s
+    .toLowerCase()
+    .replace(/[^\w\s]/g, " ")
+    .split(/\s+/)
+    .filter(Boolean)
+    .filter((t) => t.length >= 3 && !stop.has(t));
+
+  const uniq: string[] = [];
+  for (const t of tokens) {
+    if (!uniq.includes(t)) uniq.push(t);
+    if (uniq.length >= 8) break;
+  }
+
+  return uniq.length ? uniq.join(" ") : s.trim();
+}
 
 function Badge({ status }: { status: string }) {
   const s = status.toUpperCase();
@@ -35,6 +60,22 @@ function Badge({ status }: { status: string }) {
   );
 }
 
+type SourceItem = {
+  chunk_id?: string;
+  filename?: string;
+  page_ref?: string | null;
+  rank?: number;
+};
+
+function safeParseSources(sourcesJson: string): SourceItem[] {
+  try {
+    const v = JSON.parse(sourcesJson);
+    return Array.isArray(v) ? v : [];
+  } catch {
+    return [];
+  }
+}
+
 export default function CapturePage({ sessionId }: { sessionId: string }) {
   const [questions, setQuestions] = useState<QuestionOut[]>([]);
   const [resources, setResources] = useState<ResourceOut[]>([]);
@@ -47,6 +88,15 @@ export default function CapturePage({ sessionId }: { sessionId: string }) {
   const [uploading, setUploading] = useState(false);
 
   const endRef = useRef<HTMLDivElement | null>(null);
+
+  // Context search (Phase 1.2)
+  const [contextFor, setContextFor] = useState<string | null>(null);
+  const [contextHits, setContextHits] = useState<ChunkHitOut[]>([]);
+  const [loadingCtx, setLoadingCtx] = useState(false);
+
+  // Phase 1.3 answers
+  const [answers, setAnswers] = useState<Record<string, AnswerOut>>({});
+  const [explainingId, setExplainingId] = useState<string | null>(null);
 
   async function refreshQuestions() {
     setErr(null);
@@ -128,14 +178,51 @@ export default function CapturePage({ sessionId }: { sessionId: string }) {
 
     try {
       const created = await api.uploadResources(sessionId, files);
-      // prepend newly created resources
       setResources((prev) => [...created, ...prev]);
-      // refresh to ensure ordering/status is accurate
       await refreshResources();
     } catch (e: any) {
       setErr(e?.message || "Upload failed");
     } finally {
       setUploading(false);
+    }
+  }
+
+  async function findContext(questionId: string, query: string) {
+    const q = query.trim();
+    if (!q) return;
+
+    setErr(null);
+    setContextFor(questionId);
+    setLoadingCtx(true);
+    setContextHits([]);
+
+    try {
+      const hits = await api.searchChunks(sessionId, q, 6);
+      setContextHits(hits);
+    } catch (e: any) {
+      setErr(e?.message || "Failed to retrieve context");
+    } finally {
+      setLoadingCtx(false);
+    }
+  }
+
+  async function explain(questionId: string) {
+    // ignore temp questions (not persisted yet)
+    if (questionId.startsWith("temp-")) {
+      setErr("Please wait until the question is saved before explaining.");
+      return;
+    }
+
+    setErr(null);
+    setExplainingId(questionId);
+
+    try {
+      const a = await api.explainQuestion(questionId);
+      setAnswers((prev) => ({ ...prev, [questionId]: a }));
+    } catch (e: any) {
+      setErr(e?.message || "Explain failed");
+    } finally {
+      setExplainingId(null);
     }
   }
 
@@ -150,17 +237,13 @@ export default function CapturePage({ sessionId }: { sessionId: string }) {
 
       <h1 style={{ fontSize: 22, fontWeight: 750, marginTop: 12 }}>Capture Mode</h1>
 
-      {err ? (
-        <p style={{ color: "crimson", marginTop: 10, whiteSpace: "pre-wrap" }}>{err}</p>
-      ) : null}
+      {err ? <p style={{ color: "crimson", marginTop: 10, whiteSpace: "pre-wrap" }}>{err}</p> : null}
 
       {/* Upload section */}
       <section style={{ marginTop: 16, padding: 16, border: "1px solid #e5e5e5", borderRadius: 12 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 12 }}>
           <h2 style={{ fontSize: 16, fontWeight: 700 }}>Lecture materials</h2>
-          <span style={{ opacity: 0.7, fontSize: 12 }}>
-            PDF / PPTX • Extraction happens immediately
-          </span>
+          <span style={{ opacity: 0.7, fontSize: 12 }}>PDF / PPTX • Extraction happens immediately</span>
         </div>
 
         <div style={{ marginTop: 10, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
@@ -199,9 +282,7 @@ export default function CapturePage({ sessionId }: { sessionId: string }) {
             Refresh materials
           </button>
 
-          <span style={{ opacity: 0.7, fontSize: 12 }}>
-            {loadingR ? "Loading…" : `${resources.length} file(s)`}
-          </span>
+          <span style={{ opacity: 0.7, fontSize: 12 }}>{loadingR ? "Loading…" : `${resources.length} file(s)`}</span>
         </div>
 
         <div style={{ marginTop: 12, display: "grid", gap: 10 }}>
@@ -212,15 +293,7 @@ export default function CapturePage({ sessionId }: { sessionId: string }) {
           ) : null}
 
           {resources.map((r) => (
-            <div
-              key={r.id}
-              style={{
-                border: "1px solid #eee",
-                borderRadius: 12,
-                padding: 12,
-                background: "white",
-              }}
-            >
+            <div key={r.id} style={{ border: "1px solid #eee", borderRadius: 12, padding: 12, background: "white" }}>
               <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center" }}>
                 <div style={{ fontWeight: 700 }}>{r.filename}</div>
                 <Badge status={r.status} />
@@ -232,9 +305,7 @@ export default function CapturePage({ sessionId }: { sessionId: string }) {
               </div>
 
               {r.status === "FAILED" && r.error ? (
-                <div style={{ marginTop: 8, color: "#b00020", fontSize: 13, whiteSpace: "pre-wrap" }}>
-                  {r.error}
-                </div>
+                <div style={{ marginTop: 8, color: "#b00020", fontSize: 13, whiteSpace: "pre-wrap" }}>{r.error}</div>
               ) : null}
             </div>
           ))}
@@ -251,64 +322,146 @@ export default function CapturePage({ sessionId }: { sessionId: string }) {
             onChange={(e) => setText(e.target.value)}
             onKeyDown={onKeyDown}
             placeholder="Type a question and press Enter…"
-            style={{
-              flex: 1,
-              padding: 12,
-              borderRadius: 12,
-              border: "1px solid #ccc",
-            }}
+            style={{ flex: 1, padding: 12, borderRadius: 12, border: "1px solid #ccc" }}
           />
           <button
             onClick={submitQuestion}
-            style={{
-              padding: "12px 14px",
-              borderRadius: 12,
-              border: "1px solid #111",
-              background: "#111",
-              color: "white",
-              cursor: "pointer",
-            }}
+            style={{ padding: "12px 14px", borderRadius: 12, border: "1px solid #111", background: "#111", color: "white", cursor: "pointer" }}
           >
             Add
           </button>
           <button
             onClick={refreshQuestions}
-            style={{
-              padding: "12px 14px",
-              borderRadius: 12,
-              border: "1px solid #ccc",
-              background: "white",
-              cursor: "pointer",
-            }}
+            style={{ padding: "12px 14px", borderRadius: 12, border: "1px solid #ccc", background: "white", cursor: "pointer" }}
           >
             Refresh
           </button>
         </div>
 
-        <div style={{ marginTop: 12, opacity: 0.7, fontSize: 12 }}>
-          {loadingQ ? "Loading…" : `${questions.length} question(s)`}
-        </div>
+        <div style={{ marginTop: 12, opacity: 0.7, fontSize: 12 }}>{loadingQ ? "Loading…" : `${questions.length} question(s)`}</div>
 
         <div style={{ marginTop: 10, display: "grid", gap: 10 }}>
-          {questions.map((q) => (
-            <div
-              key={q.id}
-              style={{
-                border: "1px solid #eee",
-                borderRadius: 12,
-                padding: 12,
-                background: q.id.startsWith("temp-") ? "#fffdf2" : "white",
-              }}
-            >
-              <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
-                <div style={{ fontWeight: 650 }}>#{q.order_index}</div>
-                <div style={{ opacity: 0.7, fontSize: 12 }}>
-                  {new Date(q.asked_at).toLocaleTimeString()}
+          {questions.map((q) => {
+            const answer = answers[q.id];
+            const sources = answer?.sources_json ? safeParseSources(answer.sources_json) : [];
+
+            return (
+              <div
+                key={q.id}
+                style={{
+                  border: "1px solid #eee",
+                  borderRadius: 12,
+                  padding: 12,
+                  background: q.id.startsWith("temp-") ? "#fffdf2" : "white",
+                }}
+              >
+                <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
+                  <div style={{ fontWeight: 650 }}>#{q.order_index}</div>
+                  <div style={{ opacity: 0.7, fontSize: 12 }}>{new Date(q.asked_at).toLocaleTimeString()}</div>
                 </div>
+
+                <div style={{ marginTop: 8, whiteSpace: "pre-wrap" }}>{q.text}</div>
+
+                {/* Buttons row */}
+                <div style={{ marginTop: 10, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                  <button
+                    onClick={() => findContext(q.id, toSearchQuery(q.text))}
+                    style={{
+                      padding: "8px 12px",
+                      borderRadius: 10,
+                      border: "1px solid #ccc",
+                      background: "white",
+                      cursor: "pointer",
+                      fontSize: 13,
+                    }}
+                  >
+                    Find context
+                  </button>
+
+                  <button
+                    onClick={() => explain(q.id)}
+                    disabled={explainingId === q.id}
+                    style={{
+                      padding: "8px 12px",
+                      borderRadius: 10,
+                      border: "1px solid #111",
+                      background: explainingId === q.id ? "#999" : "#111",
+                      color: "white",
+                      cursor: explainingId === q.id ? "not-allowed" : "pointer",
+                      fontSize: 13,
+                    }}
+                  >
+                    {explainingId === q.id ? "Explaining…" : "Explain"}
+                  </button>
+
+                  {contextFor === q.id ? (
+                    <span style={{ opacity: 0.7, fontSize: 12 }}>
+                      {loadingCtx ? "Searching slides…" : `${contextHits.length} hit(s)`}
+                    </span>
+                  ) : null}
+                </div>
+
+                {/* Context results */}
+                {contextFor === q.id ? (
+                  <div style={{ marginTop: 10, display: "grid", gap: 10 }}>
+                    {loadingCtx ? (
+                      <div style={{ opacity: 0.7, fontSize: 13 }}>Searching…</div>
+                    ) : contextHits.length === 0 ? (
+                      <div style={{ opacity: 0.7, fontSize: 13 }}>No relevant chunks found yet.</div>
+                    ) : (
+                      contextHits.map((h) => (
+                        <div
+                          key={h.chunk_id}
+                          style={{
+                            border: "1px solid #eee",
+                            borderRadius: 12,
+                            padding: 12,
+                            background: "#fafafa",
+                          }}
+                        >
+                          <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
+                            <div style={{ fontWeight: 650 }}>
+                              {h.filename} {h.page_ref ? `• ${h.page_ref}` : ""}
+                            </div>
+                            <div style={{ opacity: 0.7, fontSize: 12 }}>
+                              rank {Number.isFinite(h.rank) ? h.rank.toFixed(3) : h.rank}
+                            </div>
+                          </div>
+
+                          <div style={{ marginTop: 8, whiteSpace: "pre-wrap", fontSize: 13, lineHeight: 1.35 }}>
+                            {h.text}
+                          </div>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                ) : null}
+
+                {/* ✅ Phase 1.3 Answer rendering */}
+                {answer?.answer_md ? (
+                  <div style={{ marginTop: 12, border: "1px solid #eee", borderRadius: 12, padding: 12, background: "white" }}>
+                    <div style={{ fontWeight: 750, marginBottom: 6 }}>Answer</div>
+                    <pre style={{ whiteSpace: "pre-wrap", margin: 0, fontFamily: "inherit", fontSize: 13, lineHeight: 1.45 }}>
+                      {answer.answer_md}
+                    </pre>
+
+                    {sources.length > 0 ? (
+                      <div style={{ marginTop: 10 }}>
+                        <div style={{ fontWeight: 700, fontSize: 13 }}>Sources</div>
+                        <ul style={{ marginTop: 6, paddingLeft: 18, opacity: 0.9, fontSize: 13 }}>
+                          {sources.slice(0, 6).map((s, idx) => (
+                            <li key={idx}>
+                              {s.filename || "resource"}{s.page_ref ? ` • ${s.page_ref}` : ""}{typeof s.rank === "number" ? ` (rank ${s.rank.toFixed(3)})` : ""}
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
               </div>
-              <div style={{ marginTop: 8, whiteSpace: "pre-wrap" }}>{q.text}</div>
-            </div>
-          ))}
+            );
+          })}
           <div ref={endRef} />
         </div>
       </section>

@@ -33,3 +33,21 @@ export type SessionOut = {
     extracted_at: string | null;
     error: string | null;
   };
+
+  export type ChunkHitOut = {
+    chunk_id: string;
+    resource_id: string;
+    filename: string;
+    page_ref: string | null;
+    text: string;
+    rank: number;
+  };  
+
+  export type AnswerOut = {
+    id: string;
+    session_id: string;
+    question_id: string;
+    answer_md: string;
+    sources_json: string;
+    created_at: string;
+  };  

@@ -1,5 +1,5 @@
 import type { ResourceOut } from "./types"; // add to top import list if needed
-import type { SessionCreate, SessionOut, QuestionCreate, QuestionOut } from "./types";
+import type { SessionCreate, SessionOut, QuestionCreate, QuestionOut, ChunkHitOut, AnswerOut } from "./types";
 
 const API_BASE =
   process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8000";
@@ -33,6 +33,9 @@ export const api = {
   listQuestions: (sessionId: string) =>
     http<QuestionOut[]>(`/api/sessions/${sessionId}/questions`),
 
+  explainQuestion: (questionId: string) =>
+    http<AnswerOut>(`/api/questions/${questionId}/explain`, { method: "POST" }),
+
   createQuestion: (sessionId: string, payload: QuestionCreate) =>
     http<QuestionOut>(`/api/sessions/${sessionId}/questions`, {
       method: "POST",
@@ -60,5 +63,8 @@ export const api = {
 
     return res.json();
   },
+
+  searchChunks: (sessionId: string, query: string, limit = 6) =>
+    http<ChunkHitOut[]>(`/api/sessions/${sessionId}/chunks/search?q=${encodeURIComponent(query)}&limit=${limit}`),
 };
 

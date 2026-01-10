@@ -1,10 +1,11 @@
 import uuid
-from sqlalchemy import select, func
+from sqlalchemy import select, func, text as sql_text
 from sqlalchemy.orm import Session
 from datetime import datetime, timezone
-from app.models import Resource as ResourceModel
+from app.models import Resource as ResourceModel, ResourceChunk as ResourceChunkModel, Answer as AnswerModel
 
-from app.models import Session as SessionModel, Question as QuestionModel
+
+from app.models import Session as SessionModel, Question as QuestionModel, Question as QuestionModel
 
 
 def create_session(db: Session, title: str, topics: str | None):
@@ -91,3 +92,114 @@ def list_resources(db: Session, session_id: uuid.UUID):
         .order_by(ResourceModel.created_at.desc())
     )
     return db.execute(stmt).scalars().all()
+
+def delete_chunks_for_resource(db: Session, resource_id: uuid.UUID):
+    db.query(ResourceChunkModel).filter(ResourceChunkModel.resource_id == resource_id).delete()
+    db.commit()
+
+
+def create_chunks_for_resource(
+    db: Session,
+    session_id: uuid.UUID,
+    resource_id: uuid.UUID,
+    chunks: list[tuple[str | None, str]],
+):
+    # remove old chunks first (idempotent)
+    db.query(ResourceChunkModel).filter(ResourceChunkModel.resource_id == resource_id).delete()
+    db.commit()
+
+    rows = []
+    for idx, (ref, txt) in enumerate(chunks, start=1):
+        rows.append(
+            ResourceChunkModel(
+                session_id=session_id,
+                resource_id=resource_id,
+                chunk_index=idx,
+                page_ref=ref,
+                text=txt,
+            )
+        )
+
+    db.add_all(rows)
+    db.commit()
+    return len(rows)
+
+
+def search_chunks_fts(db: Session, session_id: uuid.UUID, query: str, limit: int = 6):
+    """
+    Full-text search over chunks scoped to session.
+    Returns list[schemas.ChunkHitOut-like dict].
+    """
+    # Use plainto_tsquery for safety and decent matching
+    # Rank > 0 ensures we only return relevant chunks
+    stmt = sql_text(
+        """
+        SELECT
+          c.id AS chunk_id,
+          c.resource_id AS resource_id,
+          r.filename AS filename,
+          c.page_ref AS page_ref,
+          c.text AS text,
+          ts_rank(to_tsvector('english', c.text), plainto_tsquery('english', :q)) AS rank
+        FROM resource_chunks c
+        JOIN resources r ON r.id = c.resource_id
+        WHERE c.session_id = :sid
+          AND to_tsvector('english', c.text) @@ plainto_tsquery('english', :q)
+        ORDER BY rank DESC
+        LIMIT :lim
+        """
+    )
+
+    rows = db.execute(stmt, {"sid": str(session_id), "q": query, "lim": limit}).mappings().all()
+    # rank comes back as Decimal sometimes; float it
+    return [
+        {
+            "chunk_id": row["chunk_id"],
+            "resource_id": row["resource_id"],
+            "filename": row["filename"],
+            "page_ref": row["page_ref"],
+            "text": row["text"],
+            "rank": float(row["rank"]),
+        }
+        for row in rows
+    ]
+
+
+def get_resource(db: Session, resource_id: uuid.UUID):
+    return db.get(ResourceModel, resource_id)
+
+
+def list_extractable_resources(db: Session, session_id: uuid.UUID):
+    stmt = (
+        select(ResourceModel)
+        .where(ResourceModel.session_id == session_id)
+        .order_by(ResourceModel.created_at.desc())
+    )
+    return db.execute(stmt).scalars().all()
+
+def get_answer_by_question(db: Session, question_id: uuid.UUID):
+    stmt = select(AnswerModel).where(AnswerModel.question_id == question_id)
+    return db.execute(stmt).scalars().first()
+
+def upsert_answer(db: Session, session_id: uuid.UUID, question_id: uuid.UUID, answer_md: str, sources_json: str):
+    existing = get_answer_by_question(db, question_id=question_id)
+    if existing:
+        existing.answer_md = answer_md
+        existing.sources_json = sources_json
+        db.commit()
+        db.refresh(existing)
+        return existing
+
+    a = AnswerModel(
+        session_id=session_id,
+        question_id=question_id,
+        answer_md=answer_md,
+        sources_json=sources_json,
+    )
+    db.add(a)
+    db.commit()
+    db.refresh(a)
+    return a
+
+def get_question(db: Session, question_id: uuid.UUID):
+    return db.get(QuestionModel, question_id)

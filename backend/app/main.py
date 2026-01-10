@@ -2,6 +2,10 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.routers.resources import router as resources_router
 from app.routers.sessions import router as sessions_router
+from app.routers.chunks import router as chunks_router
+from app.routers.explain import router as explain_router
+
+
 
 app = FastAPI(title="Lecture Companion API")
 
@@ -15,7 +19,8 @@ app.add_middleware(
 
 app.include_router(sessions_router)
 app.include_router(resources_router)
-
+app.include_router(chunks_router)
+app.include_router(explain_router)
 
 @app.get("/health")
 def health():
