@@ -23,3 +23,13 @@ export type SessionOut = {
     text: string;
   };
   
+  export type ResourceOut = {
+    id: string;
+    session_id: string;
+    filename: string;
+    mime_type: string | null;
+    status: string; // UPLOADED | EXTRACTED | FAILED
+    created_at: string;
+    extracted_at: string | null;
+    error: string | null;
+  };

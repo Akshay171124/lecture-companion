@@ -32,3 +32,16 @@ class QuestionOut(BaseModel):
 
     class Config:
         from_attributes = True
+        
+class ResourceOut(BaseModel):
+    id: uuid.UUID
+    session_id: uuid.UUID
+    filename: str
+    mime_type: str | None
+    status: str
+    created_at: datetime
+    extracted_at: datetime | None
+    error: str | None
+
+    class Config:
+        from_attributes = True

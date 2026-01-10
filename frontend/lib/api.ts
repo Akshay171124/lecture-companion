@@ -1,3 +1,4 @@
+import type { ResourceOut } from "./types"; // add to top import list if needed
 import type { SessionCreate, SessionOut, QuestionCreate, QuestionOut } from "./types";
 
 const API_BASE =
@@ -37,4 +38,27 @@ export const api = {
       method: "POST",
       body: JSON.stringify(payload),
     }),
+  
+  listResources: (sessionId: string) =>
+    http<ResourceOut[]>(`/api/sessions/${sessionId}/resources`),
+
+  uploadResources: async (sessionId: string, files: File[]): Promise<ResourceOut[]> => {
+    const base = process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8000";
+    const form = new FormData();
+    files.forEach((f) => form.append("files", f));
+
+    const res = await fetch(`${base}/api/sessions/${sessionId}/resources`, {
+      method: "POST",
+      body: form,
+      cache: "no-store",
+    });
+
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      throw new Error(`HTTP ${res.status} ${res.statusText}: ${text}`);
+    }
+
+    return res.json();
+  },
 };
+
