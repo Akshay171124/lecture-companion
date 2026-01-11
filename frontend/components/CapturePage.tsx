@@ -3,6 +3,9 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../lib/api";
 import type { QuestionOut, ResourceOut, ChunkHitOut, AnswerOut } from "../lib/types";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+
 
 function toSearchQuery(s: string) {
   const stop = new Set([
@@ -98,6 +101,12 @@ export default function CapturePage({ sessionId }: { sessionId: string }) {
   const [answers, setAnswers] = useState<Record<string, AnswerOut>>({});
   const [explainingId, setExplainingId] = useState<string | null>(null);
 
+  // Explain all
+  const [explainingAll, setExplainingAll] = useState(false);
+
+  const hasExtracted = resources.some((r) => r.status === "EXTRACTED");
+  const hasQuestions = questions.some((q) => !q.id.startsWith("temp-"));
+
   async function refreshQuestions() {
     setErr(null);
     setLoadingQ(true);
@@ -125,8 +134,8 @@ export default function CapturePage({ sessionId }: { sessionId: string }) {
   }
 
   async function refreshAll() {
-    await Promise.all([refreshQuestions(), refreshResources()]);
-  }
+    await Promise.all([refreshQuestions(), refreshResources(), refreshAnswers()]);
+  }  
 
   useEffect(() => {
     refreshAll();
@@ -180,6 +189,8 @@ export default function CapturePage({ sessionId }: { sessionId: string }) {
       const created = await api.uploadResources(sessionId, files);
       setResources((prev) => [...created, ...prev]);
       await refreshResources();
+
+      // Auto-chunk (best-effort)
       try {
         await api.chunkAll(sessionId);
         await refreshResources();
@@ -231,6 +242,49 @@ export default function CapturePage({ sessionId }: { sessionId: string }) {
       setExplainingId(null);
     }
   }
+
+  async function explainAll() {
+    if (!hasExtracted) {
+      setErr("Upload slides first (and wait for extraction/chunking) before using Explain all.");
+      return;
+    }
+    if (!hasQuestions) {
+      setErr("Add at least one saved question before using Explain all.");
+      return;
+    }
+
+    setErr(null);
+    setExplainingAll(true);
+
+    try {
+      const res = await api.explainAll(sessionId);
+
+      // merge returned answers into existing state
+      const map: Record<string, AnswerOut> = {};
+      for (const a of res.answers) map[a.question_id] = a;
+
+      setAnswers((prev) => ({ ...prev, ...map }));
+      if (res.count === 0) {
+        setErr("No unanswered questions left (answers already exist).");
+      }
+    } catch (e: any) {
+      setErr(e?.message || "Explain All failed");
+    } finally {
+      setExplainingAll(false);
+    }
+  }
+
+  async function refreshAnswers() {
+    try {
+      const data = await api.listAnswers(sessionId);
+      const map: Record<string, AnswerOut> = {};
+      for (const a of data) map[a.question_id] = a;
+      setAnswers(map);
+    } catch (e) {
+      // optional: ignore silently
+    }
+  }
+  
 
   return (
     <main style={{ padding: 24, fontFamily: "system-ui", maxWidth: 980, margin: "0 auto" }}>
@@ -321,6 +375,31 @@ export default function CapturePage({ sessionId }: { sessionId: string }) {
       {/* Question capture section */}
       <section style={{ marginTop: 16, padding: 16, border: "1px solid #e5e5e5", borderRadius: 12 }}>
         <h2 style={{ fontSize: 16, fontWeight: 700 }}>Questions</h2>
+
+        {/* ✅ Explain All row (polish) */}
+        <div style={{ marginTop: 10, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+          <button
+            onClick={explainAll}
+            disabled={explainingAll || !hasExtracted || !hasQuestions}
+            style={{
+              padding: "10px 14px",
+              borderRadius: 12,
+              border: "1px solid #111",
+              background: explainingAll ? "#999" : "#111",
+              color: "white",
+              cursor: explainingAll ? "not-allowed" : "pointer",
+              fontWeight: 650,
+              opacity: !hasExtracted || !hasQuestions ? 0.6 : 1,
+            }}
+            title={!hasExtracted ? "Upload and extract slides first" : !hasQuestions ? "Add a question first" : ""}
+          >
+            {explainingAll ? "Explaining all…" : "Explain all"}
+          </button>
+
+          <span style={{ opacity: 0.7, fontSize: 12 }}>
+            Explains only unanswered questions • requires extracted slides
+          </span>
+        </div>
 
         <div style={{ marginTop: 10, display: "flex", gap: 10 }}>
           <input
@@ -443,13 +522,15 @@ export default function CapturePage({ sessionId }: { sessionId: string }) {
                   </div>
                 ) : null}
 
-                {/* ✅ Phase 1.3 Answer rendering */}
+                {/* Answer rendering */}
                 {answer?.answer_md ? (
                   <div style={{ marginTop: 12, border: "1px solid #eee", borderRadius: 12, padding: 12, background: "white" }}>
                     <div style={{ fontWeight: 750, marginBottom: 6 }}>Answer</div>
-                    <pre style={{ whiteSpace: "pre-wrap", margin: 0, fontFamily: "inherit", fontSize: 13, lineHeight: 1.45 }}>
-                      {answer.answer_md}
-                    </pre>
+                    <div style={{ fontSize: 13, lineHeight: 1.55 }}>
+                      <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                        {answer.answer_md}
+                      </ReactMarkdown>
+                    </div>
 
                     {sources.length > 0 ? (
                       <div style={{ marginTop: 10 }}>
@@ -457,7 +538,9 @@ export default function CapturePage({ sessionId }: { sessionId: string }) {
                         <ul style={{ marginTop: 6, paddingLeft: 18, opacity: 0.9, fontSize: 13 }}>
                           {sources.slice(0, 6).map((s, idx) => (
                             <li key={idx}>
-                              {s.filename || "resource"}{s.page_ref ? ` • ${s.page_ref}` : ""}{typeof s.rank === "number" ? ` (rank ${s.rank.toFixed(3)})` : ""}
+                              {s.filename || "resource"}
+                              {s.page_ref ? ` • ${s.page_ref}` : ""}
+                              {typeof s.rank === "number" ? ` (rank ${s.rank.toFixed(3)})` : ""}
                             </li>
                           ))}
                         </ul>

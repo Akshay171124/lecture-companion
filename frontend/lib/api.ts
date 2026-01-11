@@ -70,5 +70,12 @@ export const api = {
   chunkAll: (sessionId: string) =>
     http<{ processed_resources: number; skipped_resources: number; chunks_created: number }>(`/api/sessions/${sessionId}/chunk-all`,{ method: "POST" }),
   
+  explainAll: (sessionId: string) =>
+    http<{ count: number; answers: AnswerOut[] }>(`/api/sessions/${sessionId}/explain-all`,{ method: "POST" }),
+
+  listAnswers: (sessionId: string) =>
+    http<AnswerOut[]>(`/api/sessions/${sessionId}/answers`),
+  
+  
 };
 
