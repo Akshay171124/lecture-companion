@@ -1,8 +1,15 @@
-import type { ResourceOut } from "./types"; // add to top import list if needed
-import type { SessionCreate, SessionOut, QuestionCreate, QuestionOut, ChunkHitOut, AnswerOut } from "./types";
+import type { ResourceOut } from "./types";
+import type {
+  SessionCreate,
+  SessionOut,
+  QuestionCreate,
+  QuestionOut,
+  ChunkHitOut,
+  AnswerOut,
+  AnswerListOut,
+} from "./types";
 
-const API_BASE =
-  process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8000";
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8000";
 
 async function http<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, {
@@ -33,19 +40,19 @@ export const api = {
   listQuestions: (sessionId: string) =>
     http<QuestionOut[]>(`/api/sessions/${sessionId}/questions`),
 
-  explainQuestion: (questionId: string) =>
-    http<AnswerOut>(`/api/questions/${questionId}/explain`, { method: "POST" }),
-
   createQuestion: (sessionId: string, payload: QuestionCreate) =>
     http<QuestionOut>(`/api/sessions/${sessionId}/questions`, {
       method: "POST",
       body: JSON.stringify(payload),
     }),
-  
+
   listResources: (sessionId: string) =>
     http<ResourceOut[]>(`/api/sessions/${sessionId}/resources`),
 
-  uploadResources: async (sessionId: string, files: File[]): Promise<ResourceOut[]> => {
+  uploadResources: async (
+    sessionId: string,
+    files: File[]
+  ): Promise<ResourceOut[]> => {
     const base = process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8000";
     const form = new FormData();
     files.forEach((f) => form.append("files", f));
@@ -65,17 +72,37 @@ export const api = {
   },
 
   searchChunks: (sessionId: string, query: string, limit = 6) =>
-    http<ChunkHitOut[]>(`/api/sessions/${sessionId}/chunks/search?q=${encodeURIComponent(query)}&limit=${limit}`),
+    http<ChunkHitOut[]>(
+      `/api/sessions/${sessionId}/chunks/search?q=${encodeURIComponent(
+        query
+      )}&limit=${limit}`
+    ),
 
   chunkAll: (sessionId: string) =>
-    http<{ processed_resources: number; skipped_resources: number; chunks_created: number }>(`/api/sessions/${sessionId}/chunk-all`,{ method: "POST" }),
-  
-  explainAll: (sessionId: string) =>
-    http<{ count: number; answers: AnswerOut[] }>(`/api/sessions/${sessionId}/explain-all`,{ method: "POST" }),
+    http<{
+      processed_resources: number;
+      skipped_resources: number;
+      chunks_created: number;
+    }>(`/api/sessions/${sessionId}/chunk-all`, { method: "POST" }),
 
+  // ✅ Answer persistence
   listAnswers: (sessionId: string) =>
-    http<AnswerOut[]>(`/api/sessions/${sessionId}/answers`),
-  
-  
-};
+    http<AnswerListOut>(`/api/sessions/${sessionId}/answers`),
 
+  // ✅ Explain + Regenerate (force)
+  explainQuestion: (questionId: string, force = false) =>
+    http<AnswerOut>(
+      `/api/questions/${questionId}/explain${force ? "?force=1" : ""}`,
+      { method: "POST" }
+    ),
+
+  regenerateQuestion: (questionId: string) =>
+    api.explainQuestion(questionId, true),
+
+  // ✅ Explain all (+ optional regenerate all)
+  explainAll: (sessionId: string, force = false) =>
+    http<{ count: number; answers: AnswerOut[] }>(
+      `/api/sessions/${sessionId}/explain-all${force ? "?force=1" : ""}`,
+      { method: "POST" }
+    ),
+};

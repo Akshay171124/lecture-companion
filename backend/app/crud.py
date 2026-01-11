@@ -1,12 +1,20 @@
 import uuid
-from sqlalchemy import select, func, text as sql_text
-from sqlalchemy.orm import Session
 from datetime import datetime, timezone
-from app.models import Resource as ResourceModel, ResourceChunk as ResourceChunkModel, Answer as AnswerModel
 
+from sqlalchemy import select, exists, func, text as sql_text
+from sqlalchemy.orm import Session
 
-from app.models import Session as SessionModel, Question as QuestionModel, Question as QuestionModel
+from app.models import (
+    Session as SessionModel,
+    Question as QuestionModel,
+    Resource as ResourceModel,
+    ResourceChunk as ResourceChunkModel,
+    Answer as AnswerModel,
+)
 
+# --------------------
+# Sessions + Questions
+# --------------------
 
 def create_session(db: Session, title: str, topics: str | None):
     s = SessionModel(title=title, topics=topics)
@@ -17,7 +25,6 @@ def create_session(db: Session, title: str, topics: str | None):
 
 
 def list_sessions(db: Session):
-    # Return sessions + question counts
     stmt = (
         select(
             SessionModel,
@@ -27,8 +34,7 @@ def list_sessions(db: Session):
         .group_by(SessionModel.id)
         .order_by(SessionModel.created_at.desc())
     )
-    rows = db.execute(stmt).all()
-    return rows
+    return db.execute(stmt).all()
 
 
 def get_session(db: Session, session_id: uuid.UUID):
@@ -44,9 +50,12 @@ def list_questions(db: Session, session_id: uuid.UUID):
     return db.execute(stmt).scalars().all()
 
 
+def list_questions_by_session(db: Session, session_id: uuid.UUID):
+    # alias for readability when used in explain-all(force)
+    return list_questions(db, session_id)
+
+
 def create_question(db: Session, session_id: uuid.UUID, text: str):
-    # MVP approach: compute next order_index by max+1
-    # (Good enough for single-user local dev. We can harden later.)
     max_stmt = select(func.coalesce(func.max(QuestionModel.order_index), 0)).where(
         QuestionModel.session_id == session_id
     )
@@ -58,6 +67,15 @@ def create_question(db: Session, session_id: uuid.UUID, text: str):
     db.commit()
     db.refresh(q)
     return q
+
+
+def get_question(db: Session, question_id: uuid.UUID):
+    return db.get(QuestionModel, question_id)
+
+
+# --------------------
+# Resources + Chunks
+# --------------------
 
 def create_resource(
     db: Session,
@@ -93,6 +111,20 @@ def list_resources(db: Session, session_id: uuid.UUID):
     )
     return db.execute(stmt).scalars().all()
 
+
+def get_resource(db: Session, resource_id: uuid.UUID):
+    return db.get(ResourceModel, resource_id)
+
+
+def list_extractable_resources(db: Session, session_id: uuid.UUID):
+    stmt = (
+        select(ResourceModel)
+        .where(ResourceModel.session_id == session_id)
+        .order_by(ResourceModel.created_at.desc())
+    )
+    return db.execute(stmt).scalars().all()
+
+
 def delete_chunks_for_resource(db: Session, resource_id: uuid.UUID):
     db.query(ResourceChunkModel).filter(ResourceChunkModel.resource_id == resource_id).delete()
     db.commit()
@@ -104,7 +136,6 @@ def create_chunks_for_resource(
     resource_id: uuid.UUID,
     chunks: list[tuple[str | None, str]],
 ):
-    # remove old chunks first (idempotent)
     db.query(ResourceChunkModel).filter(ResourceChunkModel.resource_id == resource_id).delete()
     db.commit()
 
@@ -126,12 +157,6 @@ def create_chunks_for_resource(
 
 
 def search_chunks_fts(db: Session, session_id: uuid.UUID, query: str, limit: int = 6):
-    """
-    Full-text search over chunks scoped to session.
-    Returns list[schemas.ChunkHitOut-like dict].
-    """
-    # Use plainto_tsquery for safety and decent matching
-    # Rank > 0 ensures we only return relevant chunks
     stmt = sql_text(
         """
         SELECT
@@ -151,7 +176,6 @@ def search_chunks_fts(db: Session, session_id: uuid.UUID, query: str, limit: int
     )
 
     rows = db.execute(stmt, {"sid": str(session_id), "q": query, "lim": limit}).mappings().all()
-    # rank comes back as Decimal sometimes; float it
     return [
         {
             "chunk_id": row["chunk_id"],
@@ -165,21 +189,14 @@ def search_chunks_fts(db: Session, session_id: uuid.UUID, query: str, limit: int
     ]
 
 
-def get_resource(db: Session, resource_id: uuid.UUID):
-    return db.get(ResourceModel, resource_id)
-
-
-def list_extractable_resources(db: Session, session_id: uuid.UUID):
-    stmt = (
-        select(ResourceModel)
-        .where(ResourceModel.session_id == session_id)
-        .order_by(ResourceModel.created_at.desc())
-    )
-    return db.execute(stmt).scalars().all()
+# --------------------
+# Answers (persistence + regenerate)
+# --------------------
 
 def get_answer_by_question(db: Session, question_id: uuid.UUID):
     stmt = select(AnswerModel).where(AnswerModel.question_id == question_id)
     return db.execute(stmt).scalars().first()
+
 
 def upsert_answer(db: Session, session_id: uuid.UUID, question_id: uuid.UUID, answer_md: str, sources_json: str):
     existing = get_answer_by_question(db, question_id=question_id)
@@ -201,5 +218,22 @@ def upsert_answer(db: Session, session_id: uuid.UUID, question_id: uuid.UUID, an
     db.refresh(a)
     return a
 
-def get_question(db: Session, question_id: uuid.UUID):
-    return db.get(QuestionModel, question_id)
+
+def list_unanswered_questions(db: Session, session_id: uuid.UUID):
+    stmt = (
+        select(QuestionModel)
+        .where(QuestionModel.session_id == session_id)
+        .where(~exists().where(AnswerModel.question_id == QuestionModel.id))
+        .order_by(QuestionModel.order_index.asc())
+    )
+    return db.execute(stmt).scalars().all()
+
+
+def list_answers_by_session(db: Session, session_id: uuid.UUID):
+    # DESC so newest answers come first (nice for “regenerate” semantics)
+    stmt = (
+        select(AnswerModel)
+        .where(AnswerModel.session_id == session_id)
+        .order_by(AnswerModel.created_at.desc())
+    )
+    return db.execute(stmt).scalars().all()

@@ -3,8 +3,9 @@ from __future__ import annotations
 import json
 import re
 import uuid
+from typing import List
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
 from app.db import get_db
@@ -66,48 +67,42 @@ def serialize_answer(a) -> dict:
         "created_at": a.created_at.isoformat(),
     }
 
-@router.get("/sessions/{session_id}/answers")
-def list_answers(session_id: uuid.UUID, db: Session = Depends(get_db)):
-    answers = crud.list_answers_by_session(db, session_id=session_id)
-    return [serialize_answer(a) for a in answers]
-
-@router.post("/questions/{question_id}/explain")
-async def explain_question(
-    question_id: uuid.UUID,
-    force: bool = Query(False, description="If true, re-generate even if an answer exists."),
+@router.post("/sessions/{session_id}/explain-all")
+async def explain_all(
+    session_id: uuid.UUID,
+    force: bool = Query(False, description="If true, regenerate ALL questions (even if already answered)."),
     db: Session = Depends(get_db),
 ):
-    q = crud.get_question(db, question_id=question_id)
-    if not q:
-        raise HTTPException(status_code=404, detail="Question not found")
+    if force:
+        qs = crud.list_questions_by_session(db, session_id=session_id)
+    else:
+        qs = crud.list_unanswered_questions(db, session_id=session_id)
 
-    if not force:
-        existing = crud.get_answer_by_question(db, question_id=question_id)
-        if existing:
-            return serialize_answer(existing)
+    if not qs:
+        return {"count": 0, "answers": []}
 
-    # retrieve context
-    query = keywordize(q.text)
-    hits = crud.search_chunks_fts(db, session_id=q.session_id, query=query, limit=6)
+    results: List[dict] = []
 
-    prompt = build_prompt(q.text, hits)
-    answer_md = await ollama_generate(prompt)
+    for q in qs:
+        query = keywordize(q.text)
+        hits = crud.search_chunks_fts(db, session_id=q.session_id, query=query, limit=6)
 
-    sources = [
-        {
-            "chunk_id": str(h["chunk_id"]),
-            "filename": h["filename"],
-            "page_ref": h.get("page_ref"),
-            "rank": h["rank"],
-        }
-        for h in hits
-    ]
+        prompt = build_prompt(q.text, hits)
+        answer_md = await ollama_generate(prompt)
 
-    saved = crud.upsert_answer(
-        db,
-        session_id=q.session_id,
-        question_id=q.id,
-        answer_md=answer_md,
-        sources_json=json.dumps(sources),
-    )
-    return serialize_answer(saved)
+        sources = [
+            {"chunk_id": str(h["chunk_id"]), "filename": h["filename"], "page_ref": h.get("page_ref"), "rank": h["rank"]}
+            for h in hits
+        ]
+
+        saved = crud.upsert_answer(
+            db,
+            session_id=q.session_id,
+            question_id=q.id,
+            answer_md=answer_md,
+            sources_json=json.dumps(sources),
+        )
+
+        results.append(serialize_answer(saved))
+
+    return {"count": len(results), "answers": results}

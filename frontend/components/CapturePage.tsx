@@ -6,7 +6,6 @@ import type { QuestionOut, ResourceOut, ChunkHitOut, AnswerOut } from "../lib/ty
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
-
 function toSearchQuery(s: string) {
   const stop = new Set([
     "the","a","an","and","or","but","so","to","of","in","on","for","with","as","at","by",
@@ -92,17 +91,18 @@ export default function CapturePage({ sessionId }: { sessionId: string }) {
 
   const endRef = useRef<HTMLDivElement | null>(null);
 
-  // Context search (Phase 1.2)
+  // Context search
   const [contextFor, setContextFor] = useState<string | null>(null);
   const [contextHits, setContextHits] = useState<ChunkHitOut[]>([]);
   const [loadingCtx, setLoadingCtx] = useState(false);
 
-  // Phase 1.3 answers
+  // Answers (persisted)
   const [answers, setAnswers] = useState<Record<string, AnswerOut>>({});
   const [explainingId, setExplainingId] = useState<string | null>(null);
 
   // Explain all
   const [explainingAll, setExplainingAll] = useState(false);
+  const [regeneratingAll, setRegeneratingAll] = useState(false);
 
   const hasExtracted = resources.some((r) => r.status === "EXTRACTED");
   const hasQuestions = questions.some((q) => !q.id.startsWith("temp-"));
@@ -133,9 +133,22 @@ export default function CapturePage({ sessionId }: { sessionId: string }) {
     }
   }
 
+  // ✅ 2.3 Answer persistence on reload
+  async function refreshAnswers() {
+    try {
+      const list = await api.listAnswers(sessionId);
+      const map: Record<string, AnswerOut> = {};
+      for (const a of list) map[a.question_id] = a;
+      setAnswers(map);
+    } catch (e) {
+      // not fatal; keep UI usable
+      console.warn("Failed to load answers:", e);
+    }
+  }
+
   async function refreshAll() {
     await Promise.all([refreshQuestions(), refreshResources(), refreshAnswers()]);
-  }  
+  }
 
   useEffect(() => {
     refreshAll();
@@ -190,7 +203,7 @@ export default function CapturePage({ sessionId }: { sessionId: string }) {
       setResources((prev) => [...created, ...prev]);
       await refreshResources();
 
-      // Auto-chunk (best-effort)
+      // auto-chunk best-effort
       try {
         await api.chunkAll(sessionId);
         await refreshResources();
@@ -223,8 +236,8 @@ export default function CapturePage({ sessionId }: { sessionId: string }) {
     }
   }
 
-  async function explain(questionId: string) {
-    // ignore temp questions (not persisted yet)
+  // ✅ explain + regenerate (force)
+  async function explain(questionId: string, force = false) {
     if (questionId.startsWith("temp-")) {
       setErr("Please wait until the question is saved before explaining.");
       return;
@@ -234,7 +247,7 @@ export default function CapturePage({ sessionId }: { sessionId: string }) {
     setExplainingId(questionId);
 
     try {
-      const a = await api.explainQuestion(questionId);
+      const a = await api.explainQuestion(questionId, force);
       setAnswers((prev) => ({ ...prev, [questionId]: a }));
     } catch (e: any) {
       setErr(e?.message || "Explain failed");
@@ -243,7 +256,7 @@ export default function CapturePage({ sessionId }: { sessionId: string }) {
     }
   }
 
-  async function explainAll() {
+  async function explainAll(force = false) {
     if (!hasExtracted) {
       setErr("Upload slides first (and wait for extraction/chunking) before using Explain all.");
       return;
@@ -254,37 +267,21 @@ export default function CapturePage({ sessionId }: { sessionId: string }) {
     }
 
     setErr(null);
-    setExplainingAll(true);
+    if (force) setRegeneratingAll(true);
+    else setExplainingAll(true);
 
     try {
-      const res = await api.explainAll(sessionId);
-
-      // merge returned answers into existing state
+      const res = await api.explainAll(sessionId, force);
       const map: Record<string, AnswerOut> = {};
       for (const a of res.answers) map[a.question_id] = a;
-
       setAnswers((prev) => ({ ...prev, ...map }));
-      if (res.count === 0) {
-        setErr("No unanswered questions left (answers already exist).");
-      }
     } catch (e: any) {
-      setErr(e?.message || "Explain All failed");
+      setErr(e?.message || (force ? "Regenerate all failed" : "Explain all failed"));
     } finally {
       setExplainingAll(false);
+      setRegeneratingAll(false);
     }
   }
-
-  async function refreshAnswers() {
-    try {
-      const data = await api.listAnswers(sessionId);
-      const map: Record<string, AnswerOut> = {};
-      for (const a of data) map[a.question_id] = a;
-      setAnswers(map);
-    } catch (e) {
-      // optional: ignore silently
-    }
-  }
-  
 
   return (
     <main style={{ padding: 24, fontFamily: "system-ui", maxWidth: 980, margin: "0 auto" }}>
@@ -372,14 +369,14 @@ export default function CapturePage({ sessionId }: { sessionId: string }) {
         </div>
       </section>
 
-      {/* Question capture section */}
+      {/* Questions */}
       <section style={{ marginTop: 16, padding: 16, border: "1px solid #e5e5e5", borderRadius: 12 }}>
         <h2 style={{ fontSize: 16, fontWeight: 700 }}>Questions</h2>
 
-        {/* ✅ Explain All row (polish) */}
+        {/* Explain all / Regenerate all */}
         <div style={{ marginTop: 10, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
           <button
-            onClick={explainAll}
+            onClick={() => explainAll(false)}
             disabled={explainingAll || !hasExtracted || !hasQuestions}
             style={{
               padding: "10px 14px",
@@ -391,13 +388,29 @@ export default function CapturePage({ sessionId }: { sessionId: string }) {
               fontWeight: 650,
               opacity: !hasExtracted || !hasQuestions ? 0.6 : 1,
             }}
-            title={!hasExtracted ? "Upload and extract slides first" : !hasQuestions ? "Add a question first" : ""}
           >
             {explainingAll ? "Explaining all…" : "Explain all"}
           </button>
 
+          <button
+            onClick={() => explainAll(true)}
+            disabled={regeneratingAll || !hasExtracted || !hasQuestions}
+            style={{
+              padding: "10px 14px",
+              borderRadius: 12,
+              border: "1px solid #ccc",
+              background: regeneratingAll ? "#eee" : "white",
+              cursor: regeneratingAll ? "not-allowed" : "pointer",
+              fontWeight: 650,
+              opacity: !hasExtracted || !hasQuestions ? 0.6 : 1,
+            }}
+            title="Forces regeneration for all questions"
+          >
+            {regeneratingAll ? "Regenerating…" : "Regenerate all"}
+          </button>
+
           <span style={{ opacity: 0.7, fontSize: 12 }}>
-            Explains only unanswered questions • requires extracted slides
+            Explain all fills missing answers • Regenerate all overwrites existing answers
           </span>
         </div>
 
@@ -423,7 +436,9 @@ export default function CapturePage({ sessionId }: { sessionId: string }) {
           </button>
         </div>
 
-        <div style={{ marginTop: 12, opacity: 0.7, fontSize: 12 }}>{loadingQ ? "Loading…" : `${questions.length} question(s)`}</div>
+        <div style={{ marginTop: 12, opacity: 0.7, fontSize: 12 }}>
+          {loadingQ ? "Loading…" : `${questions.length} question(s)`}
+        </div>
 
         <div style={{ marginTop: 10, display: "grid", gap: 10 }}>
           {questions.map((q) => {
@@ -447,7 +462,6 @@ export default function CapturePage({ sessionId }: { sessionId: string }) {
 
                 <div style={{ marginTop: 8, whiteSpace: "pre-wrap" }}>{q.text}</div>
 
-                {/* Buttons row */}
                 <div style={{ marginTop: 10, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
                   <button
                     onClick={() => findContext(q.id, toSearchQuery(q.text))}
@@ -464,7 +478,7 @@ export default function CapturePage({ sessionId }: { sessionId: string }) {
                   </button>
 
                   <button
-                    onClick={() => explain(q.id)}
+                    onClick={() => explain(q.id, false)}
                     disabled={explainingId === q.id}
                     style={{
                       padding: "8px 12px",
@@ -479,6 +493,23 @@ export default function CapturePage({ sessionId }: { sessionId: string }) {
                     {explainingId === q.id ? "Explaining…" : "Explain"}
                   </button>
 
+                  <button
+                    onClick={() => explain(q.id, true)}
+                    disabled={explainingId === q.id || q.id.startsWith("temp-")}
+                    style={{
+                      padding: "8px 12px",
+                      borderRadius: 10,
+                      border: "1px solid #ccc",
+                      background: "white",
+                      cursor: explainingId === q.id ? "not-allowed" : "pointer",
+                      fontSize: 13,
+                      opacity: answer ? 1 : 0.6,
+                    }}
+                    title={answer ? "Regenerate this answer" : "Generate an answer first"}
+                  >
+                    Regenerate
+                  </button>
+
                   {contextFor === q.id ? (
                     <span style={{ opacity: 0.7, fontSize: 12 }}>
                       {loadingCtx ? "Searching slides…" : `${contextHits.length} hit(s)`}
@@ -486,7 +517,6 @@ export default function CapturePage({ sessionId }: { sessionId: string }) {
                   ) : null}
                 </div>
 
-                {/* Context results */}
                 {contextFor === q.id ? (
                   <div style={{ marginTop: 10, display: "grid", gap: 10 }}>
                     {loadingCtx ? (
@@ -495,15 +525,7 @@ export default function CapturePage({ sessionId }: { sessionId: string }) {
                       <div style={{ opacity: 0.7, fontSize: 13 }}>No relevant chunks found yet.</div>
                     ) : (
                       contextHits.map((h) => (
-                        <div
-                          key={h.chunk_id}
-                          style={{
-                            border: "1px solid #eee",
-                            borderRadius: 12,
-                            padding: 12,
-                            background: "#fafafa",
-                          }}
-                        >
+                        <div key={h.chunk_id} style={{ border: "1px solid #eee", borderRadius: 12, padding: 12, background: "#fafafa" }}>
                           <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
                             <div style={{ fontWeight: 650 }}>
                               {h.filename} {h.page_ref ? `• ${h.page_ref}` : ""}
@@ -512,7 +534,6 @@ export default function CapturePage({ sessionId }: { sessionId: string }) {
                               rank {Number.isFinite(h.rank) ? h.rank.toFixed(3) : h.rank}
                             </div>
                           </div>
-
                           <div style={{ marginTop: 8, whiteSpace: "pre-wrap", fontSize: 13, lineHeight: 1.35 }}>
                             {h.text}
                           </div>
@@ -522,7 +543,6 @@ export default function CapturePage({ sessionId }: { sessionId: string }) {
                   </div>
                 ) : null}
 
-                {/* Answer rendering */}
                 {answer?.answer_md ? (
                   <div style={{ marginTop: 12, border: "1px solid #eee", borderRadius: 12, padding: 12, background: "white" }}>
                     <div style={{ fontWeight: 750, marginBottom: 6 }}>Answer</div>
