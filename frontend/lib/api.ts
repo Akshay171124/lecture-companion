@@ -66,5 +66,9 @@ export const api = {
 
   searchChunks: (sessionId: string, query: string, limit = 6) =>
     http<ChunkHitOut[]>(`/api/sessions/${sessionId}/chunks/search?q=${encodeURIComponent(query)}&limit=${limit}`),
+
+  chunkAll: (sessionId: string) =>
+    http<{ processed_resources: number; skipped_resources: number; chunks_created: number }>(`/api/sessions/${sessionId}/chunk-all`,{ method: "POST" }),
+  
 };
 

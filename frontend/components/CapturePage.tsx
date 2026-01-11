@@ -180,6 +180,12 @@ export default function CapturePage({ sessionId }: { sessionId: string }) {
       const created = await api.uploadResources(sessionId, files);
       setResources((prev) => [...created, ...prev]);
       await refreshResources();
+      try {
+        await api.chunkAll(sessionId);
+        await refreshResources();
+      } catch (e) {
+        console.warn("Auto-chunk failed:", e);
+      }
     } catch (e: any) {
       setErr(e?.message || "Upload failed");
     } finally {
