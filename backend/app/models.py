@@ -5,6 +5,8 @@ from sqlalchemy import String, Text, DateTime, ForeignKey, Integer, Index
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 import enum
+from pgvector.sqlalchemy import Vector
+
 
 from app.db import Base
 
@@ -86,7 +88,8 @@ class ResourceChunk(Base):
     chunk_index: Mapped[int] = mapped_column(Integer, nullable=False)
     page_ref: Mapped[str | None] = mapped_column(String(50), nullable=True)  # "page 3" / "slide 12"
     text: Mapped[str] = mapped_column(Text, nullable=False)
-    
+    embedding: Mapped[list[float] | None] = mapped_column(Vector(768), nullable=True)
+
 
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)

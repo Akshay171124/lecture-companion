@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime, timezone
-
+from app.embeddings import embed_text
 from sqlalchemy import select, exists, func, text as sql_text
 from sqlalchemy.orm import Session
 
@@ -157,6 +157,35 @@ def create_chunks_for_resource(
     return len(rows)
 
 
+async def create_chunks_for_resource_with_embeddings(
+    db: Session,
+    session_id: uuid.UUID,
+    resource_id: uuid.UUID,
+    chunks: list[tuple[str | None, str]],
+):
+    # delete existing
+    db.query(ResourceChunkModel).filter(ResourceChunkModel.resource_id == resource_id).delete()
+    db.commit()
+
+    rows = []
+    for idx, (ref, txt) in enumerate(chunks, start=1):
+        emb = await embed_text(txt)
+        rows.append(
+            ResourceChunkModel(
+                session_id=session_id,
+                resource_id=resource_id,
+                chunk_index=idx,
+                page_ref=ref,
+                text=txt,
+                embedding=emb,
+            )
+        )
+
+    db.add_all(rows)
+    db.commit()
+    return len(rows)
+
+
 def search_chunks_fts(db: Session, session_id: uuid.UUID, query: str, limit: int = 6):
     stmt = sql_text(
         """
@@ -238,3 +267,78 @@ def list_answers_by_session(db: Session, session_id: uuid.UUID):
         .order_by(AnswerModel.created_at.desc())
     )
     return db.execute(stmt).scalars().all()
+
+def search_chunks_semantic(db: Session, session_id: uuid.UUID, query_vec: list[float], limit: int = 6):
+    qvec_str = "[" + ",".join(str(float(x)) for x in query_vec) + "]"
+
+    stmt = sql_text("""
+        SELECT
+          c.id AS chunk_id,
+          c.resource_id AS resource_id,
+          r.filename AS filename,
+          c.page_ref AS page_ref,
+          c.text AS text,
+          (1 - (c.embedding <=> (:qvec)::vector(768))) AS rank
+        FROM resource_chunks c
+        JOIN resources r ON r.id = c.resource_id
+        WHERE c.session_id = :sid
+          AND c.embedding IS NOT NULL
+        ORDER BY c.embedding <=> (:qvec)::vector(768) ASC
+        LIMIT :lim
+    """)
+
+    rows = db.execute(
+        stmt,
+        {"sid": str(session_id), "qvec": qvec_str, "lim": limit},
+    ).mappings().all()
+
+    return [
+        {
+            "chunk_id": row["chunk_id"],
+            "resource_id": row["resource_id"],
+            "filename": row["filename"],
+            "page_ref": row["page_ref"],
+            "text": row["text"],
+            "rank": float(row["rank"]),
+            "source": "semantic",
+        }
+        for row in rows
+    ]
+    
+def search_chunks_hybrid(
+    db: Session,
+    session_id: uuid.UUID,
+    query: str,
+    query_vec: list[float],
+    limit: int = 6,
+    w_fts: float = 0.45,
+    w_sem: float = 0.55,
+):
+    fts_hits = search_chunks_fts(db, session_id=session_id, query=query, limit=limit)
+    sem_hits = search_chunks_semantic(db, session_id=session_id, query_vec=query_vec, limit=limit)
+
+    combined: dict[str, dict] = {}
+
+    # normalize / score: both ranks already “higher is better”
+    for h in fts_hits:
+        cid = str(h["chunk_id"])
+        combined[cid] = {**h, "score": float(h["rank"]) * w_fts, "source": "fts"}
+
+    for h in sem_hits:
+        cid = str(h["chunk_id"])
+        if cid in combined:
+            combined[cid]["score"] += float(h["rank"]) * w_sem
+            combined[cid]["source"] = "hybrid"
+        else:
+            combined[cid] = {**h, "score": float(h["rank"]) * w_sem}
+
+    ranked = sorted(combined.values(), key=lambda x: x["score"], reverse=True)
+    out = ranked[:limit]
+
+    # return in same schema as ChunkHitOut (keep rank as final combined score)
+    for r in out:
+        r["rank"] = float(r["score"])
+        r.pop("score", None)
+
+    return out
+    

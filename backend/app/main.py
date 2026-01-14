@@ -6,7 +6,7 @@ from app.routers.chunks import router as chunks_router
 from app.routers.explain import router as explain_router
 from app.routers.explain_all import router as explain_all_router
 from app.routers.answers import router as answers_router
-
+from app.routers.semantic_search import router as semantic_search_router
 
 app = FastAPI(title="Lecture Companion API")
 
@@ -24,6 +24,7 @@ app.include_router(chunks_router)
 app.include_router(explain_router)
 app.include_router(explain_all_router)
 app.include_router(answers_router)
+app.include_router(semantic_search_router)
 
 @app.get("/health")
 def health():
