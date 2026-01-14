@@ -3,7 +3,6 @@ from datetime import datetime, timezone
 
 from sqlalchemy import select, exists, func, text as sql_text
 from sqlalchemy.orm import Session
-from app.llm_embeddings import embed_text
 
 from app.models import (
     Session as SessionModel,
@@ -131,7 +130,7 @@ def delete_chunks_for_resource(db: Session, resource_id: uuid.UUID):
     db.commit()
 
 
-async def create_chunks_for_resource(
+def create_chunks_for_resource(
     db: Session,
     session_id: uuid.UUID,
     resource_id: uuid.UUID,
@@ -142,7 +141,6 @@ async def create_chunks_for_resource(
 
     rows = []
     for idx, (ref, txt) in enumerate(chunks, start=1):
-        embedding = await embed_text(txt) 
 
         rows.append(
             ResourceChunkModel(
@@ -150,8 +148,7 @@ async def create_chunks_for_resource(
                 resource_id=resource_id,
                 chunk_index=idx,
                 page_ref=ref,
-                text=txt,
-                embedding=embedding,          
+                text=txt,      
             )
         )
 
@@ -241,41 +238,3 @@ def list_answers_by_session(db: Session, session_id: uuid.UUID):
         .order_by(AnswerModel.created_at.desc())
     )
     return db.execute(stmt).scalars().all()
-
-def search_chunks_semantic(
-    db: Session,
-    session_id: uuid.UUID,
-    query_embedding: list[float],
-    limit: int = 6,
-):
-    stmt = sql_text(
-        """
-        SELECT
-          id AS chunk_id,
-          resource_id,
-          text,
-          page_ref,
-          1 - (embedding <=> :emb) AS score
-        FROM resource_chunks
-        WHERE session_id = :sid
-          AND embedding IS NOT NULL
-        ORDER BY embedding <=> :emb
-        LIMIT :lim
-        """
-    )
-
-    rows = db.execute(
-        stmt,
-        {"sid": str(session_id), "emb": query_embedding, "lim": limit},
-    ).mappings().all()
-
-    return [
-        {
-            "chunk_id": r["chunk_id"],
-            "resource_id": r["resource_id"],
-            "text": r["text"],
-            "page_ref": r["page_ref"],
-            "rank": float(r["score"]),
-        }
-        for r in rows
-    ]
