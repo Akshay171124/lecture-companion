@@ -39,16 +39,23 @@ def build_prompt(question: str, contexts: list[dict]) -> str:
         ref = f"{c['filename']}" + (f" • {c['page_ref']}" if c.get("page_ref") else "")
         ctx_lines.append(f"[{i}] {ref}\n{c['text']}\n")
 
-    ctx_block = "\n".join(ctx_lines) if ctx_lines else "(No context found.)"
+    ctx_block = "\n".join(ctx_lines) if ctx_lines else "(No retrieved context.)"
 
-    return f"""You are a lecture companion. Answer the student's question using ONLY the provided context when possible.
-If context is insufficient, say so and then give a brief general explanation.
+    return f"""
+You are a lecture companion helping a student understand course material.
+
+Guidelines:
+- Use the provided context as a helpful reference when it is relevant.
+- If the context directly answers the question, base your explanation on it and cite it.
+- If the context is partial or insufficient, say so briefly and then provide a clear general explanation.
+- Do NOT say that no context was provided if context is shown.
+- Cite sources using bracket numbers like [1], [2] when you rely on them.
 
 Return Markdown with sections:
-- TL;DR (2-3 lines)
+- TL;DR (2–3 lines)
 - Explanation
 - Example (if helpful)
-- Sources (list the bracket numbers you used, e.g., [1], [2])
+- Sources (list bracket numbers used)
 
 Question:
 {question}
@@ -56,6 +63,7 @@ Question:
 Context:
 {ctx_block}
 """
+
 
 def serialize_answer(a) -> dict:
     return {
